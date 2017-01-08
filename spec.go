@@ -1,9 +1,8 @@
 package tracker
 
 import (
-	"reflect"
-
 	"github.com/the-anna-project/context"
+	"github.com/the-anna-project/event"
 )
 
 // Service represents a service to collect and provision metrics about executed
@@ -15,7 +14,7 @@ type Service interface {
 	Boot()
 	// CLGCount simply counts the CLGs being executed. That is, CLGCount
 	// increments a counter for this specific metric by one when being executed.
-	CLGCount(ctx context.Context, args []reflect.Value) error
+	CLGCount(ctx context.Context, signal event.Signal) error
 	// CLGCountPerCLGTree emits a gauge for the number of CLGs being executed per
 	// CLG tree ID. This number may vary a lot. The challenge of this metric is
 	// the "undefined" event of when no more CLGs are executed for a specific CLG
@@ -24,20 +23,20 @@ type Service interface {
 	// distributed across processes. Therefore we maintain an intermediate counter
 	// until we are certain no CLG is queued anymore. When this is the case,
 	// CLGCountPerCLGTree emits the actual gauge to the configured instrumentor.
-	CLGCountPerCLGTree(ctx context.Context, args []reflect.Value) error
+	CLGCountPerCLGTree(ctx context.Context, signal event.Signal) error
 	// CLGID is a tracker function used by Track to resolve the CLG IDs of the
 	// destination and sources provided by the current context. The collected
 	// information are persisted in form of behaviour peers.
-	CLGID(ctx context.Context, args []reflect.Value) error
+	CLGID(ctx context.Context, signal event.Signal) error
 	// CLGName is a tracker function used by Track to resolve the CLG names of the
 	// destination and sources provided by the current context. The collected
 	// information are persisted in form of behaviour peers.
-	CLGName(ctx context.Context, args []reflect.Value) error
+	CLGName(ctx context.Context, signal event.Signal) error
 	// Shutdown ends all processes of the service like shutting down a machine.
 	// The call to Shutdown blocks until the service is completely shut down, so
 	// you might want to call it in a separate goroutine.
 	Shutdown()
 	// Track collects metrics about executed CLG trees. Therefore information
 	// provided by the given context are used.
-	Track(ctx context.Context, args []reflect.Value) error
+	Track(ctx context.Context, signal event.Signal) error
 }

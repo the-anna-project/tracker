@@ -4,16 +4,13 @@ package tracker
 
 import (
 	"fmt"
-	"reflect"
 	"sync"
 
 	"github.com/the-anna-project/connection"
 	"github.com/the-anna-project/context"
-	clgtreeid "github.com/the-anna-project/context/clg/tree/id"
-	destinationid "github.com/the-anna-project/context/destination/id"
-	destinationname "github.com/the-anna-project/context/destination/name"
-	sourceids "github.com/the-anna-project/context/source/ids"
-	sourcenames "github.com/the-anna-project/context/source/names"
+	currentclgtree "github.com/the-anna-project/context/current/clg/tree"
+	currentdestination "github.com/the-anna-project/context/current/destination"
+	currentsource "github.com/the-anna-project/context/current/source"
 	"github.com/the-anna-project/event"
 	"github.com/the-anna-project/instrumentor"
 	"github.com/the-anna-project/peer"
@@ -165,7 +162,7 @@ func (s *service) Boot() {
 	})
 }
 
-func (s *service) CLGCount(ctx context.Context, args []reflect.Value) error {
+func (s *service) CLGCount(ctx context.Context, signal event.Signal) error {
 	counterConfig := s.instrumentor.Publisher.CounterConfig()
 	counterConfig.SetHelp("Number of CLGs being executed.")
 	counterConfig.SetName(s.instrumentor.Publisher.NewKey("clgs", "total"))
@@ -178,7 +175,7 @@ func (s *service) CLGCount(ctx context.Context, args []reflect.Value) error {
 	return nil
 }
 
-func (s *service) CLGCountPerCLGTree(ctx context.Context, args []reflect.Value) error {
+func (s *service) CLGCountPerCLGTree(ctx context.Context, signal event.Signal) error {
 	instrumentorKey := s.instrumentor.Publisher.NewKey("clgs", "per", "clg", "tree", "total")
 
 	// We want to count CLGs being executed per CLG tree. To do so we have to
@@ -186,21 +183,21 @@ func (s *service) CLGCountPerCLGTree(ctx context.Context, args []reflect.Value) 
 	// This intermediate counter is stored in the instrumentor storage to be able
 	// to increment the counter accross multiple processes. Once we know the final
 	// result of our metric, we can emit it to the actual instrumentor.
-	clgTreeID, ok := clgtreeid.FromContext(ctx)
+	currentCLGTree, ok := currentclgtree.FromContext(signal.Context())
 	if !ok {
 		return maskAnyf(invalidContextError, "clg tree id must not be empty")
 	}
-	storageKey := fmt.Sprintf("%s:%s", instrumentorKey, clgTreeID)
+	storageKey := fmt.Sprintf("%s:%s", instrumentorKey, currentCLGTree.ID)
 	counter, err := s.storage.Instrumentor.Increment(storageKey, 1)
 	if err != nil {
 		return maskAny(err)
 	}
 
 	// We only want to emit the actual result when there is no activity around the
-	// current CLG tree ID anymore. Our queue manages labeled signal events. So,
-	// in case the queue does not hold any event labeled with the current CLG tree
-	// ID anymore, we can emit the actual metric.
-	ok, err = s.event.Signal.ExistsAnyWithLabel(clgTreeID)
+	// current CLG tree ID anymore. Our queue manages namespaced signal events.
+	// So, in case the queue does not hold any event for a specific namespace
+	// anymore, which is the current CLG tree ID, we can emit the actual metric.
+	ok, err = s.event.Network.ExistsAny(ctx, currentCLGTree.ID)
 	if err != nil {
 		return maskAny(err)
 	}
@@ -233,23 +230,23 @@ func (s *service) CLGCountPerCLGTree(ctx context.Context, args []reflect.Value) 
 	return nil
 }
 
-func (s *service) CLGID(ctx context.Context, args []reflect.Value) error {
-	destinationID, ok := destinationid.FromContext(ctx)
+func (s *service) CLGID(ctx context.Context, signal event.Signal) error {
+	currentDestination, ok := currentdestination.FromContext(signal.Context())
 	if !ok {
 		return maskAnyf(invalidContextError, "destination id must not be empty")
 	}
-	sourceIDs, ok := sourceids.FromContext(ctx)
+	currentSource, ok := currentsource.FromContext(signal.Context())
 	if !ok {
 		return maskAnyf(invalidContextError, "source ids must not be empty")
 	}
 
 	// Prepare a queue to synchronise the workload.
-	queue := make(chan string, len(sourceIDs))
-	for _, sourceID := range sourceIDs {
+	queue := make(chan string, len(currentSource.IDs))
+	for _, sourceID := range currentSource.IDs {
 		queue <- sourceID
 	}
 
-	peerB, err := s.peer.Behaviour.Create(destinationID)
+	peerB, err := s.peer.Behaviour.Create(ctx, currentDestination.ID)
 	if err != nil {
 		return maskAny(err)
 	}
@@ -261,7 +258,7 @@ func (s *service) CLGID(ctx context.Context, args []reflect.Value) error {
 		func(canceler <-chan struct{}) error {
 			sourceID := <-queue
 
-			peerA, err := s.peer.Behaviour.Create(sourceID)
+			peerA, err := s.peer.Behaviour.Create(ctx, sourceID)
 			if err != nil {
 				return maskAny(err)
 			}
@@ -280,7 +277,7 @@ func (s *service) CLGID(ctx context.Context, args []reflect.Value) error {
 	executeConfig := s.worker.ExecuteConfig()
 	executeConfig.Actions = actions
 	executeConfig.Canceler = s.closer
-	executeConfig.NumWorkers = len(sourceIDs)
+	executeConfig.NumWorkers = len(currentSource.IDs)
 	err = s.worker.Execute(executeConfig)
 	if err != nil {
 		return maskAny(err)
@@ -289,23 +286,23 @@ func (s *service) CLGID(ctx context.Context, args []reflect.Value) error {
 	return nil
 }
 
-func (s *service) CLGName(ctx context.Context, args []reflect.Value) error {
-	destinationName, ok := destinationname.FromContext(ctx)
+func (s *service) CLGName(ctx context.Context, signal event.Signal) error {
+	currentDestination, ok := currentdestination.FromContext(signal.Context())
 	if !ok {
 		return maskAnyf(invalidContextError, "destination name must not be empty")
 	}
-	sourceNames, ok := sourcenames.FromContext(ctx)
+	currentSource, ok := currentsource.FromContext(signal.Context())
 	if !ok {
 		return maskAnyf(invalidContextError, "source names must not be empty")
 	}
 
 	// Prepare a queue to synchronise the workload.
-	queue := make(chan string, len(sourceNames))
-	for _, n := range sourceNames {
+	queue := make(chan string, len(currentSource.Names))
+	for _, n := range currentSource.Names {
 		queue <- n
 	}
 
-	peerB, err := s.peer.Behaviour.Create(destinationName)
+	peerB, err := s.peer.Behaviour.Create(ctx, currentDestination.Name)
 	if err != nil {
 		return maskAny(err)
 	}
@@ -317,7 +314,7 @@ func (s *service) CLGName(ctx context.Context, args []reflect.Value) error {
 		func(canceler <-chan struct{}) error {
 			sourceName := <-queue
 
-			peerA, err := s.peer.Behaviour.Create(sourceName)
+			peerA, err := s.peer.Behaviour.Create(ctx, sourceName)
 			if err != nil {
 				return maskAny(err)
 			}
@@ -336,7 +333,7 @@ func (s *service) CLGName(ctx context.Context, args []reflect.Value) error {
 	executeConfig := s.worker.ExecuteConfig()
 	executeConfig.Actions = actions
 	executeConfig.Canceler = s.closer
-	executeConfig.NumWorkers = len(sourceNames)
+	executeConfig.NumWorkers = len(currentSource.Names)
 	err = s.worker.Execute(executeConfig)
 	if err != nil {
 		return maskAny(err)
@@ -351,10 +348,10 @@ func (s *service) Shutdown() {
 	})
 }
 
-func (s *service) Track(ctx context.Context, args []reflect.Value) error {
+func (s *service) Track(ctx context.Context, signal event.Signal) error {
 	actions := []func(canceler <-chan struct{}) error{
 		func(canceler <-chan struct{}) error {
-			err := s.CLGCount(ctx, args)
+			err := s.CLGCount(ctx, signal)
 			if err != nil {
 				return maskAny(err)
 			}
@@ -362,7 +359,7 @@ func (s *service) Track(ctx context.Context, args []reflect.Value) error {
 			return nil
 		},
 		func(canceler <-chan struct{}) error {
-			err := s.CLGCountPerCLGTree(ctx, args)
+			err := s.CLGCountPerCLGTree(ctx, signal)
 			if err != nil {
 				return maskAny(err)
 			}
@@ -370,7 +367,7 @@ func (s *service) Track(ctx context.Context, args []reflect.Value) error {
 			return nil
 		},
 		func(canceler <-chan struct{}) error {
-			err := s.CLGID(ctx, args)
+			err := s.CLGID(ctx, signal)
 			if err != nil {
 				return maskAny(err)
 			}
@@ -378,7 +375,7 @@ func (s *service) Track(ctx context.Context, args []reflect.Value) error {
 			return nil
 		},
 		func(canceler <-chan struct{}) error {
-			err := s.CLGName(ctx, args)
+			err := s.CLGName(ctx, signal)
 			if err != nil {
 				return maskAny(err)
 			}
